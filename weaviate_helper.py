@@ -22,11 +22,14 @@ def _require_env(name: str) -> str:
 _url = _require_env("WEAVIATE_URL")
 _api_key = _require_env("WEAVIATE_API_KEY")
 
+import atexit
 # Connect to Weaviate Cloud using environment-provided URL and API key
 client = weaviate.connect_to_weaviate_cloud(
     cluster_url=_url,
     auth_credentials=Auth.api_key(_api_key),
 )
+# Ensure client is closed on exit to avoid ResourceWarnings
+atexit.register(client.close)
 
 # Ensure collection 'FAQ' exists with desired schema
 if not client.collections.exists("FAQ"):
@@ -131,7 +134,7 @@ def insert_story_part(part: str, vector: list[float]) -> str | None:
         properties={
             "part": part,
         },
-        vector=vector,
+        # vector=vector,
     )
     return uuid
 

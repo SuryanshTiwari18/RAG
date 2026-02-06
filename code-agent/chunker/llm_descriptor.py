@@ -3,7 +3,11 @@ LLM Description Generator for Code Chunks
 Generates rich, searchable descriptions for better vector search
 """
 
-import openai
+try:
+    from google import genai
+    from google.genai import types
+except Exception as exc:
+    raise ImportError("The 'google-genai' package is required. Install with: pip install google-genai") from exc
 import os
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
@@ -15,25 +19,27 @@ class LLMDescriptor:
     """Generates LLM descriptions for code chunks"""
     
     def __init__(self, api_key: Optional[str] = None):
-        self.client = openai.OpenAI(
-            api_key=api_key or os.getenv("OPENAI_API_KEY")
-        )
-        self.model = "gpt-4o-mini"  # Cost-effective model for descriptions
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not self.api_key:
+             # Just a warning or fallback, original code didn't raise explicitly in init, but client creation might.
+             pass
+        self.client = genai.Client(api_key=self.api_key)
+        self.model = "gemini-2.5-flash"  # Cost-effective model for descriptions
     
     def generate_chunk_description(self, chunk: Dict[str, Any]) -> str:
         """Generate LLM description for a code chunk"""
         try:
             prompt = self._build_prompt(chunk)
-            response = self.client.chat.completions.create(
+            response = self.client.models.generate_content(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are an expert code analyst. Write clear, concise descriptions of code that are optimized for semantic search and vector retrieval."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=200,
-                temperature=0.3
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction="You are an expert code analyst. Write clear, concise descriptions of code that are optimized for semantic search and vector retrieval.",
+                    max_output_tokens=200,
+                    temperature=0.3
+                )
             )
-            return response.choices[0].message.content.strip()
+            return (response.text or "").strip()
         except Exception as e:
             print(f"Error generating description for {chunk['name']}: {e}")
             return self._fallback_description(chunk)

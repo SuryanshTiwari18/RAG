@@ -159,7 +159,7 @@ def _print_json(chunks: List[Dict]) -> None:
 
 
 def main() -> None:
-    path = "/Users/vivekanandvivek/RAG/data/FAQ.txt"
+    path = "data/FAQ.txt"
     chunks = parse_qa_file(path)
     for ch in chunks:
         print(f"Q: {ch['question']}")

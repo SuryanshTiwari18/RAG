@@ -11,9 +11,10 @@ except Exception:
     pass
 
 try:
-    from openai import OpenAI
-except Exception as exc:  # pragma: no cover
-    raise ImportError("The 'openai' package is required. Install with: pip install openai") from exc
+    from google import genai
+    from google.genai import types
+except Exception as exc:
+    raise ImportError("The 'google-genai' package is required. Install with: pip install google-genai") from exc
 
 
 class QueryRewriter:
@@ -26,13 +27,17 @@ class QueryRewriter:
     Where messages is a list of {"role": "system"|"user"|"assistant", "content": str}.
     """
 
-    def __init__(self, model: str = "gpt-4o-mini", max_chars: int = 500) -> None:
+    def __init__(self, model: str = "gemini-2.5-flash", max_chars: int = 500) -> None:
         self.model = model
         self.max_chars = max_chars
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set in environment")
-        self._client = OpenAI(api_key=api_key)
+             # Fallback
+            api_key = os.getenv("GOOGLE_API_KEY")
+
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY (or GOOGLE_API_KEY) not set in environment")
+        self._client = genai.Client(api_key=api_key)
 
         self._system_prompt = (
             "You are a query rewriting assistant for agreement-related FAQs. "
@@ -48,24 +53,30 @@ class QueryRewriter:
 
         # Truncate window to last ~10 turns for efficiency
         window = messages[-10:]
+        
+        # Convert messages to Gemini format if needed, or just format as string for prompt
+        # The existing _format_for_rewrite creates a string transcript, which is fine for a user message.
+        transcript = self._format_for_rewrite(window)
 
         try:
-            completion = self._client.chat.completions.create(
+            response = self._client.models.generate_content(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self._system_prompt},
-                    {"role": "user", "content": self._format_for_rewrite(window)},
-                ],
-                temperature=0.0,
-                max_tokens=256,
+                contents=transcript,
+                config=types.GenerateContentConfig(
+                    system_instruction=self._system_prompt,
+                    temperature=0.0,
+                    max_output_tokens=256,
+                )
             )
-            text = (completion.choices[0].message.content or "").strip()
+            text = (response.text or "").strip()
+            
             if not text:
                 return self._fallback(messages)
             if len(text) > self.max_chars:
                 text = text[: self.max_chars].rstrip()
             return text
         except Exception:
+            # Fallback on error
             return self._fallback(messages)
 
     def _fallback(self, messages: List[Dict[str, str]]) -> str:

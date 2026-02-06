@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
+import os
 
 from story_chunker import StoryChunker
 from embedder import get_embedding
@@ -52,6 +53,6 @@ class StoryIngester:
 
 
 if __name__ == "__main__":
-    ingester = StoryIngester("/Users/vivekanandvivek/RAG/data/story.txt")
+    ingester = StoryIngester(os.path.join(os.path.dirname(__file__), "data", "story.txt"))
     n = ingester.ingest_with_overlaps()
     print(f"Ingested {n} story chunks.")

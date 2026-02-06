@@ -9,7 +9,11 @@ try:
 except Exception:
     pass
 
-from openai import OpenAI
+try:
+    from google import genai
+    from google.genai import types
+except Exception as exc:
+    raise ImportError("The 'google-genai' package is required. Install with: pip install google-genai") from exc
 
 from query_rewriter import QueryRewriter
 from embedder import get_embedding
@@ -25,11 +29,14 @@ SYSTEM_PROMPT = (
 
 
 class AgreementSpecialistChatbotMultiHits:
-    def __init__(self, llm_model: str = "gpt-4o") -> None:
-        api_key = os.getenv("OPENAI_API_KEY")
+    def __init__(self, llm_model: str = "gemini-2.5-flash") -> None:
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set in environment")
-        self._client = OpenAI(api_key=api_key)
+             # Fallback
+            api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY (or GOOGLE_API_KEY) not set in environment")
+        self._client = genai.Client(api_key=api_key)
         self.llm_model = llm_model
         self.history: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.rewriter = QueryRewriter(model=llm_model)
@@ -44,6 +51,27 @@ class AgreementSpecialistChatbotMultiHits:
             lines.append(f"[{i}] Q: {q}\n    A: {a}")
         return "\n".join(lines)
 
+    def _to_gemini_contents(self, messages: List[Dict[str, str]]) -> Tuple[List[types.Content], str]:
+        """Convert OpenAI-style messages to Gemini contents and extract system instruction."""
+        gemini_msgs = []
+        system_instruction = ""
+        
+        for m in messages:
+            role = m.get("role")
+            content = m.get("content") or ""
+            
+            if role == "system":
+                if system_instruction:
+                    system_instruction += "\n" + content
+                else:
+                    system_instruction = content
+            elif role == "user":
+                gemini_msgs.append(types.Content(role="user", parts=[types.Part.from_text(text=content)]))
+            elif role == "assistant":
+                gemini_msgs.append(types.Content(role="model", parts=[types.Part.from_text(text=content)]))
+                
+        return gemini_msgs, system_instruction
+
     def ask(self, user_message: str) -> str:
         # Keep history
         self.history.append({"role": "user", "content": user_message})
@@ -55,19 +83,27 @@ class AgreementSpecialistChatbotMultiHits:
         query_vec = get_embedding(rewritten_query)
         hits = search_near_vector(query_vec, limit=15)
         print(hits)
+        
         # Build messages with all contexts as a system note
-        messages: List[Dict[str, str]] = list(self.history)
+        # We construct a temporary message list for this turn
+        messages_for_turn = list(self.history[:-1])
         ctx_block = self._context_block(hits)
         if ctx_block:
-            messages.append({"role": "system", "content": ctx_block})
+             messages_for_turn.append({"role": "system", "content": ctx_block})
+        messages_for_turn.append(self.history[-1])
 
-        completion = self._client.chat.completions.create(
+        gemini_contents, system_instr = self._to_gemini_contents(messages_for_turn)
+
+        response = self._client.models.generate_content(
             model=self.llm_model,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=400,
+            contents=gemini_contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instr,
+                temperature=0.2,
+                max_output_tokens=400,
+            )
         )
-        answer = (completion.choices[0].message.content or "").strip()
+        answer = (response.text or "").strip()
         self.history.append({"role": "assistant", "content": answer})
         return answer
 

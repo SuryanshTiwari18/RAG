@@ -95,7 +95,7 @@ def demo_chunking_strategies():
     Demonstrate different chunking strategies on the story text.
     """
     # Read the story
-    with open("/Users/vivekanandvivek/RAG/data/story.txt", "r", encoding="utf-8") as f:
+    with open("data/story.txt", "r", encoding="utf-8") as f:
         story_text = f.read()
     
     print(f"Story length: {len(story_text)} characters")

@@ -9,7 +9,11 @@ try:
 except Exception:
     pass
 
-from openai import OpenAI
+try:
+    from google import genai
+    from google.genai import types
+except Exception as exc:
+    raise ImportError("The 'google-genai' package is required. Install with: pip install google-genai") from exc
 
 
 SYSTEM_PROMPT = (
@@ -21,26 +25,27 @@ SYSTEM_PROMPT = (
 
 
 class LLMReranker:
-    def __init__(self, model: str = "gpt-4o-mini") -> None:
-        api_key = os.getenv("OPENAI_API_KEY")
+    def __init__(self, model: str = "gemini-2.5-flash") -> None:
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set in environment")
-        self._client = OpenAI(api_key=api_key)
+             # Fallback
+            api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY (or GOOGLE_API_KEY) not set in environment")
+        self._client = genai.Client(api_key=api_key)
         self.model = model
 
-    def _build_prompt(self, query: str, passages: List[str]) -> List[Dict[str, str]]:
+    def _build_prompt(self, query: str, passages: List[str]) -> str:
         numbered = "\n\n".join([f"[{i+1}]\n{p}" for i, p in enumerate(passages)])
         user = (
             "Query:\n"
             f"{query}\n\n"
-            "Passages (score each on 0–6):\n"
+            "Passages:\n"
             f"{numbered}\n\n"
-            "Call the provided tool with an array of integers named 'scores', one per passage, strictly in order."
+            "Assign a relevance score (0-6) to each passage. 0=irrelevant, 6=highly relevant. "
+            "Return a JSON object with a single key 'scores' containing the list of integer scores, strictly in order of passages."
         )
-        return [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user},
-        ]
+        return user
 
     def rerank(self, query: str, hits: List[Dict], top_r: int = 3) -> List[Dict]:
         if not hits:
@@ -51,51 +56,50 @@ class LLMReranker:
             a = h.get("answer") or ""
             passages.append(f"Q: {q}\nA: {a}")
 
-        messages = self._build_prompt(query, passages)
-        # Define tool schema to force structured output
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "score_passages",
-                    "description": "Return relevance scores (0-6) for each passage in order.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "scores": {
-                                "type": "array",
-                                "items": {"type": "integer"},
-                                "description": "Array of integers, length equals number of passages."
-                            }
-                        },
-                        "required": ["scores"],
-                        "additionalProperties": False,
-                    },
-                },
-            }
-        ]
+        prompt = self._build_prompt(query, passages)
+        
+        # Define response schema
+        response_schema = {
+             "type": "OBJECT",
+             "properties": {
+                 "scores": {
+                     "type": "ARRAY",
+                     "items": {"type": "INTEGER"}
+                 }
+             },
+             "required": ["scores"]
+        }
 
-        completion = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0,
-            tools=tools,
-            tool_choice={"type": "function", "function": {"name": "score_passages"}},
-        )
-
-        scores: List[int]
         try:
-            tool_calls = completion.choices[0].message.tool_calls or []
-            if not tool_calls:
-                raise ValueError("No tool call returned")
-            args_text = tool_calls[0].function.arguments
+            response = self._client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                    response_schema=response_schema
+                )
+            )
+            
             import json
-            args = json.loads(args_text)
+            # With structured output, response.text should be valid JSON
+            if not response.text:
+                raise ValueError("Empty response")
+            
+            args = json.loads(response.text)
             raw_scores = args.get("scores")
             if not isinstance(raw_scores, list):
                 raise ValueError("scores missing or not a list")
             scores = [int(x) for x in raw_scores]
-        except Exception:
+            
+            # Pad with 0 if length mismatch (Gemini usually gets it right, but safety first)
+            if len(scores) < len(passages):
+                scores.extend([0] * (len(passages) - len(scores)))
+            scores = scores[:len(passages)]
+            
+        except Exception as e:
+            print(f"Reranking failed: {e}")
             scores = [0] * len(passages)
 
         # Zip, sort by score desc, stable by index
